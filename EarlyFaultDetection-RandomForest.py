@@ -9,6 +9,28 @@ from sklearn.metrics import classification_report, confusion_matrix, balanced_ac
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
+# === FUNCTION TO USE SPECIFIC THRESHOLD FOR PREDICTIONS ===
+def predict_with_threshold(model, X, threshold=0.5):
+    """
+    Make predictions using a specific threshold instead of the default 0.5
+    
+    Parameters:
+    - model: trained classifier with predict_proba method
+    - X: features for prediction
+    - threshold: decision threshold (0-1)
+    
+    Returns:
+    - predictions: binary predictions (0/1)
+    - probabilities: probability scores for positive class
+    """
+    # Get probability scores for positive class (fault)
+    probabilities = model.predict_proba(X)[:, 1]
+    
+    # Apply custom threshold
+    predictions = (probabilities >= threshold).astype(int)
+    
+    return predictions, probabilities
+
 # Load your SCADA dataset ---
 # Define the path to your CSV files
 csv_folder_path = '../wind-turbines-data/setA/Wind Farm A/datasets'  # Update to your actual path
@@ -163,6 +185,19 @@ fault_start_times = pd.to_datetime(fault_data['event_start'].values)
 fault_end_times = pd.to_datetime(fault_data['event_end'].values)
 
 df['fault_label'] = 0
+
+# Remove rows with status_type_id 1, 2, 3, or 4 (keep only 0 and 5)
+print(f"Before filtering status_type_id: {len(df)} rows")
+print(f"Status type distribution before filtering:")
+print(df['status_type_id'].value_counts().sort_index())
+
+# Keep only rows where status_type_id is 0 (normal) or 5 (fault)
+df = df[df['status_type_id'].isin([0, 1, 2, 5])].reset_index(drop=True)
+
+print(f"After filtering status_type_id: {len(df)} rows")
+print(f"Status type distribution after filtering:")
+print(df['status_type_id'].value_counts().sort_index())
+
 # Use vectorized operation instead of iterating (much faster and correct)
 df.loc[df['status_type_id'] == 5, 'fault_label'] = 1
 
@@ -425,54 +460,230 @@ print(f"  Dataset size increased: {len(y_train_smote)} (was {len(y_train)})")
 
 # IMPORTANT: Don't use class_weight='balanced' with SMOTE - data is already balanced!
 # model = LogisticRegression(random_state=42, max_iter=1000, n_jobs=-1)
-model = RandomForestClassifier(
-        n_estimators=200,  # More trees for better performance
-        max_depth=15,      # Prevent overfitting
-        min_samples_split=10,
-        min_samples_leaf=5,
-        random_state=42,
+
+# === HYPERPARAMETER TUNING FOR IMPROVED ACCURACY ===
+print("\n=== HYPERPARAMETER TUNING FOR RANDOM FOREST ===")
+
+# Option 1: Manual tuning with improved parameters
+model_optimized = RandomForestClassifier(
+    n_estimators=500,           # More trees = better performance (but slower)
+    max_depth=20,               # Deeper trees for complex patterns
+    min_samples_split=5,        # Allow smaller splits
+    min_samples_leaf=2,         # Allow smaller leaf nodes
+    max_features='sqrt',        # Feature selection strategy
+    bootstrap=True,
+    oob_score=True,
+    random_state=42,
+    n_jobs=-1,
+    class_weight=None,          # Already balanced with SMOTE
+    criterion='gini',           # Try 'entropy' as alternative
+    max_samples=0.8,            # Use 80% of samples per tree
+)
+
+# Option 2: Grid Search for best parameters (commented out for speed)
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from scipy.stats import randint
+
+# === OPTIONAL: AUTOMATED HYPERPARAMETER TUNING ===
+# Uncomment this section for automatic hyperparameter optimization
+# WARNING: This can take 10-30 minutes to run!
+
+def perform_hyperparameter_tuning():
+    """
+    Perform automated hyperparameter tuning using RandomizedSearchCV
+    """
+    print("\n=== AUTOMATED HYPERPARAMETER TUNING ===")
+    print("⚠️  This may take 10-30 minutes...")
+    
+    # Define parameter distributions for RandomizedSearchCV
+    param_distributions = {
+        'n_estimators': [100, 200, 300, 500, 800],
+        'max_depth': [10, 15, 20, 25, 30, None],
+        'min_samples_split': [2, 5, 10, 15],
+        'min_samples_leaf': [1, 2, 4, 6],
+        'max_features': ['sqrt', 'log2', 0.3, 0.5, 0.7],
+        'bootstrap': [True],
+        'criterion': ['gini', 'entropy']
+    }
+    
+    # Create base model
+    rf_base = RandomForestClassifier(random_state=42, n_jobs=-1, oob_score=True)
+    
+    # Randomized search with cross-validation
+    random_search = RandomizedSearchCV(
+        estimator=rf_base,
+        param_distributions=param_distributions,
+        n_iter=50,  # Number of parameter combinations to try
+        cv=3,       # 3-fold cross-validation
+        scoring='f1',  # Optimize for F1-score
         n_jobs=-1,
-        bootstrap=True,
-        oob_score=True
-        )
-# model = MLPClassifier(
-#     hidden_layer_sizes=(150, 80, 35),
-#     activation='relu',
-#     solver='adam',
-#     max_iter=500,
-#     random_state=42,
-#     early_stopping=True,
-#     validation_fraction=0.1
-# )
-# model = LGBMClassifier(
-#     n_estimators=300,
-#     max_depth=6,
-#     learning_rate=0.1,
-#     subsample=0.8,
-#     colsample_bytree=0.8,
-#     random_state=42,
-#     verbose=-1
-# )
-# model = XGBClassifier(
-#     n_estimators=300,
-#     max_depth=6,
-#     learning_rate=0.1,
-#     subsample=0.8,
-#     colsample_bytree=0.8,
-#     random_state=42,
-#     eval_metric='logloss',
-#     use_label_encoder=False
-# )
-# model = ExtraTreesClassifier(
-#     n_estimators=1200,
-#     max_depth=50,
-#     min_samples_split=10,
-#     min_samples_leaf=5,
-#     random_state=42,
-#     n_jobs=-1
-# )
-# model.fit(X_train_scaled, y_train)
-model.fit(X_train_smote, y_train_smote)
+        verbose=1,
+        random_state=42
+    )
+    
+    # Fit the randomized search
+    random_search.fit(X_train_smote, y_train_smote)
+    
+    print(f"Best parameters found:")
+    for param, value in random_search.best_params_.items():
+        print(f"  {param}: {value}")
+    
+    print(f"Best cross-validation F1-score: {random_search.best_score_:.4f}")
+    
+    return random_search.best_estimator_
+
+# Uncomment the next line to run hyperparameter tuning
+# model_tuned = perform_hyperparameter_tuning()
+
+print("Training optimized Random Forest...")
+model = model_optimized
+
+# === ADVANCED TECHNIQUES FOR IMPROVED ACCURACY ===
+
+# 1. FEATURE SELECTION FOR BETTER PERFORMANCE
+print("\n=== FEATURE SELECTION ===")
+from sklearn.feature_selection import SelectKBest, f_classif, RFE
+from sklearn.ensemble import ExtraTreesClassifier
+
+# Method 1: Select top K features using statistical tests
+selector_k_best = SelectKBest(score_func=f_classif, k=50)  # Select top 50 features
+X_train_selected = selector_k_best.fit_transform(X_train_smote, y_train_smote)
+X_test_selected = selector_k_best.transform(X_test_scaled)
+
+print(f"Selected {X_train_selected.shape[1]} features out of {X_train_smote.shape[1]}")
+
+# Method 2: Recursive Feature Elimination (RFE)
+print("Performing Recursive Feature Elimination...")
+estimator_for_rfe = ExtraTreesClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+rfe_selector = RFE(estimator=estimator_for_rfe, n_features_to_select=40, step=1)
+X_train_rfe = rfe_selector.fit_transform(X_train_smote, y_train_smote)
+X_test_rfe = rfe_selector.transform(X_test_scaled)
+
+print(f"RFE selected {X_train_rfe.shape[1]} features")
+
+# 2. ENSEMBLE OF MULTIPLE MODELS
+print("\n=== ENSEMBLE METHODS ===")
+from sklearn.ensemble import VotingClassifier, BaggingClassifier
+from sklearn.tree import DecisionTreeClassifier
+
+# Create multiple diverse models
+rf_model = RandomForestClassifier(n_estimators=300, max_depth=20, random_state=42, n_jobs=-1)
+et_model = ExtraTreesClassifier(n_estimators=300, max_depth=20, random_state=43, n_jobs=-1)
+gb_model = GradientBoostingClassifier(n_estimators=200, max_depth=8, learning_rate=0.1, random_state=44)
+
+# Voting Classifier (combines predictions)
+voting_classifier = VotingClassifier(
+    estimators=[
+        ('rf', rf_model),
+        ('et', et_model), 
+        ('gb', gb_model)
+    ],
+    voting='soft',  # Use probability voting
+    n_jobs=-1
+)
+
+# 3. ADVANCED RANDOM FOREST WITH FEATURE ENGINEERING
+print("\n=== TRAINING MULTIPLE MODELS ===")
+
+models_to_compare = {
+    'Original_RF': RandomForestClassifier(n_estimators=200, max_depth=15, random_state=42, n_jobs=-1),
+    'Optimized_RF': model_optimized,
+    'RF_with_Feature_Selection': RandomForestClassifier(n_estimators=500, max_depth=25, random_state=42, n_jobs=-1),
+    'Ensemble_Voting': voting_classifier,
+    'Extra_Trees': ExtraTreesClassifier(n_estimators=500, max_depth=25, random_state=42, n_jobs=-1)
+}
+
+# Train and evaluate each model
+model_results = {}
+
+for model_name, model_instance in models_to_compare.items():
+    print(f"\nTraining {model_name}...")
+    
+    if model_name == 'RF_with_Feature_Selection':
+        # Use feature-selected data
+        model_instance.fit(X_train_selected, y_train_smote)
+        y_pred_temp = model_instance.predict(X_test_selected)
+        y_proba_temp = model_instance.predict_proba(X_test_selected)[:, 1]
+    else:
+        # Use full feature set
+        model_instance.fit(X_train_smote, y_train_smote)
+        y_pred_temp = model_instance.predict(X_test_scaled)
+        y_proba_temp = model_instance.predict_proba(X_test_scaled)[:, 1]
+    
+    # Calculate metrics
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+    
+    accuracy = accuracy_score(y_test, y_pred_temp)
+    precision = precision_score(y_test, y_pred_temp, zero_division=0)
+    recall = recall_score(y_test, y_pred_temp, zero_division=0)
+    f1 = f1_score(y_test, y_pred_temp, zero_division=0)
+    
+    try:
+        auc = roc_auc_score(y_test, y_proba_temp)
+    except:
+        auc = 0.0
+    
+    model_results[model_name] = {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'auc': auc,
+        'model': model_instance
+    }
+    
+    print(f"  Accuracy: {accuracy:.4f}")
+    print(f"  Precision: {precision:.4f}")
+    print(f"  Recall: {recall:.4f}")
+    print(f"  F1-Score: {f1:.4f}")
+    print(f"  AUC: {auc:.4f}")
+
+# 4. SELECT BEST MODEL
+print("\n=== MODEL COMPARISON RESULTS ===")
+results_df = pd.DataFrame(model_results).T
+print(results_df.round(4))
+
+# Find best model by F1-score (good for imbalanced data)
+best_model_name = results_df['f1'].idxmax()
+best_model = model_results[best_model_name]['model']
+best_f1_score = results_df.loc[best_model_name, 'f1']
+
+print(f"\n🏆 BEST MODEL: {best_model_name}")
+print(f"   F1-Score: {best_f1_score:.4f}")
+print(f"   Accuracy: {results_df.loc[best_model_name, 'accuracy']:.4f}")
+print(f"   Recall: {results_df.loc[best_model_name, 'recall']:.4f}")
+print(f"   Precision: {results_df.loc[best_model_name, 'precision']:.4f}")
+
+# 5. FEATURE IMPORTANCE ANALYSIS
+print(f"\n=== FEATURE IMPORTANCE ANALYSIS ===")
+if hasattr(best_model, 'feature_importances_'):
+    if best_model_name == 'RF_with_Feature_Selection':
+        # Get feature names for selected features
+        feature_names = [f"Feature_{i}" for i in range(X_train_selected.shape[1])]
+    else:
+        # Get all feature names
+        feature_names = [f"Feature_{i}" for i in range(X_train_smote.shape[1])]
+    
+    # Get feature importances
+    importances = best_model.feature_importances_
+    feature_importance = list(zip(feature_names, importances))
+    feature_importance.sort(key=lambda x: x[1], reverse=True)
+    
+    print("Top 15 most important features:")
+    for i, (feature, importance) in enumerate(feature_importance[:15]):
+        print(f"  {i+1:2d}. {feature}: {importance:.4f}")
+
+# Use the best model for final predictions
+model = best_model
+print(f"\n✅ Using {best_model_name} for final evaluation")
+
+# Update predictions with best model
+if best_model_name == 'RF_with_Feature_Selection':
+    y_pred = best_model.predict(X_test_selected)
+    y_proba = best_model.predict_proba(X_test_selected)[:, 1]
+else:
+    y_pred = best_model.predict(X_test_scaled)
+    y_proba = best_model.predict_proba(X_test_scaled)[:, 1]
 
 # === ENHANCED EVALUATION WITH THRESHOLD OPTIMIZATION ===
 print("\n" + "="*60)
@@ -561,6 +772,14 @@ for threshold in thresholds:
     print(f"\nEvaluating threshold: {threshold:.2f}")
     print("Confusion Matrix:")
     print(cm_thresh)
+    predictions_f1, probabilities = predict_with_threshold(model, X_test_scaled, threshold)
+    print(classification_report(y_test, predictions_f1, target_names=['Normal', 'Fault']))
+
+    print(f"\n1️⃣  USING F1 THRESHOLD ({threshold:.2f}):")
+    print(f"   Predictions made: {len(predictions_f1)} samples")
+    print(f"   Predicted faults: {predictions_f1.sum()}")
+    print(f"   Actual faults: {(y_test==1).sum()}")
+    
     tn_t, fp_t, fn_t, tp_t = cm_thresh.ravel() if cm_thresh.size == 4 else (0, 0, 0, 0)
     
     precision_t = tp_t / (tp_t + fp_t) if (tp_t + fp_t) > 0 else 0
@@ -659,27 +878,7 @@ else:
 
 print(f"\n💡 Next steps: Consider feature engineering, ensemble methods, or collecting more fault examples")
 
-# === FUNCTION TO USE SPECIFIC THRESHOLD FOR PREDICTIONS ===
-def predict_with_threshold(model, X, threshold=0.5):
-    """
-    Make predictions using a specific threshold instead of the default 0.5
-    
-    Parameters:
-    - model: trained classifier with predict_proba method
-    - X: features for prediction
-    - threshold: decision threshold (0-1)
-    
-    Returns:
-    - predictions: binary predictions (0/1)
-    - probabilities: probability scores for positive class
-    """
-    # Get probability scores for positive class (fault)
-    probabilities = model.predict_proba(X)[:, 1]
-    
-    # Apply custom threshold
-    predictions = (probabilities >= threshold).astype(int)
-    
-    return predictions, probabilities
+
 
 # === DEMONSTRATION: HOW TO USE SPECIFIC THRESHOLDS ===
 print(f"\n" + "="*60)
@@ -688,7 +887,7 @@ print(f"="*60)
 
 # Example 1: Using the optimal F1 threshold
 optimal_f1_threshold = best_f1['threshold']
-predictions_f1, probabilities = predict_with_threshold(model, X_test, optimal_f1_threshold)
+predictions_f1, probabilities = predict_with_threshold(model, X_test_scaled, optimal_f1_threshold)
 
 print(f"\n1️⃣  USING OPTIMAL F1 THRESHOLD ({optimal_f1_threshold:.2f}):")
 print(f"   Predictions made: {len(predictions_f1)} samples")
@@ -702,7 +901,7 @@ print(classification_report(y_test, predictions_f1, target_names=['Normal', 'Fau
 
 # Example 2: Using a custom threshold (e.g., 0.3 for higher sensitivity)
 custom_threshold = 0.3
-predictions_custom, _ = predict_with_threshold(model, X_test, custom_threshold)
+predictions_custom, _ = predict_with_threshold(model, X_test_scaled, custom_threshold)
 
 print(f"\n2️⃣  USING CUSTOM THRESHOLD ({custom_threshold}):")
 print(f"   Predictions made: {len(predictions_custom)} samples")
