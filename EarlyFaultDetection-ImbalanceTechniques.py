@@ -25,114 +25,143 @@ for file in csv_files:
 # Combine all DataFrames into one
 combined_df = pd.concat(dataframes, ignore_index=True)
 
-# === RENAME COLUMNS BASED ON FEATURE DESCRIPTIONS ===
-print("\n=== RENAMING COLUMNS BASED ON FEATURE DESCRIPTIONS ===")
-
-# Load the feature description mapping
-feature_desc_path = '../wind-turbines-data/setA/Wind Farm A/comma_feature_description.csv'
-feature_desc = pd.read_csv(feature_desc_path)
-
-print(f"Loaded feature descriptions for {len(feature_desc)} sensors")
-print(f"Original dataframe has {len(combined_df.columns)} columns")
-
-# Create mapping dictionary from actual column names to descriptions
-column_mapping = {}
-
-# First, let's see what columns we have
-print(f"\nSample of original columns:")
-for i, col in enumerate(combined_df.columns[:10]):
-    print(f"  {i+1:2d}. {col}")
-if len(combined_df.columns) > 10:
-    print(f"  ... and {len(combined_df.columns) - 10} more")
-
-# Create the mapping based on sensor names and statistics
-for _, row in feature_desc.iterrows():
-    sensor_name = row['sensor_name']
-    description = row['description']
-    statistics_type = row['statistics_type']
+def rename_sensor_columns_with_descriptions(df, feature_desc_path, verbose=True):
+    """
+    Rename sensor columns in the dataframe using descriptive names from feature description file.
     
-    # Handle different statistics types
-    if ',' in statistics_type:
-        # Multiple statistics for this sensor
-        stats = [stat.strip() for stat in statistics_type.split(',')]
-        for stat in stats:
-            if stat == 'average':
-                col_name = f"{sensor_name}_avg"
-            elif stat == 'maximum':
-                col_name = f"{sensor_name}_max"
-            elif stat == 'minimum':
-                col_name = f"{sensor_name}_min"
-            elif stat == 'std_dev':
-                col_name = f"{sensor_name}_std"
-            else:
-                col_name = f"{sensor_name}_{stat}"
-            
-            # Check if this column exists in our dataframe
-            if col_name in combined_df.columns:
+    Parameters:
+    - df: pandas DataFrame with sensor columns to rename
+    - feature_desc_path: str, path to the comma_feature_description.csv file
+    - verbose: bool, whether to print detailed information during processing
+    
+    Returns:
+    - df_renamed: DataFrame with renamed columns
+    - column_mapping: dict, mapping from old column names to new descriptive names
+    - unmapped_columns: list, sensor columns that couldn't be mapped
+    """
+    
+    if verbose:
+        print("\n=== RENAMING COLUMNS BASED ON FEATURE DESCRIPTIONS ===")
+    
+    # Load the feature description mapping
+    try:
+        feature_desc = pd.read_csv(feature_desc_path)
+    except FileNotFoundError:
+        print(f"❌ Error: Could not find feature description file at {feature_desc_path}")
+        return df, {}, []
+    
+    if verbose:
+        print(f"Loaded feature descriptions for {len(feature_desc)} sensors")
+        print(f"Original dataframe has {len(df.columns)} columns")
+    
+    # Create mapping dictionary from actual column names to descriptions
+    column_mapping = {}
+    
+    if verbose:
+        print(f"\nSample of original columns:")
+        for i, col in enumerate(df.columns[:10]):
+            print(f"  {i+1:2d}. {col}")
+        if len(df.columns) > 10:
+            print(f"  ... and {len(df.columns) - 10} more")
+    
+    # Create the mapping based on sensor names and statistics
+    for _, row in feature_desc.iterrows():
+        sensor_name = row['sensor_name']
+        description = row['description']
+        statistics_type = row['statistics_type']
+        
+        # Handle different statistics types
+        if ',' in statistics_type:
+            # Multiple statistics for this sensor
+            stats = [stat.strip() for stat in statistics_type.split(',')]
+            for stat in stats:
                 if stat == 'average':
-                    column_mapping[col_name] = description
+                    col_name = f"{sensor_name}_avg"
+                elif stat == 'maximum':
+                    col_name = f"{sensor_name}_max"
+                elif stat == 'minimum':
+                    col_name = f"{sensor_name}_min"
+                elif stat == 'std_dev':
+                    col_name = f"{sensor_name}_std"
                 else:
-                    column_mapping[col_name] = f"{description} ({stat})"
-    else:
-        # Single statistic
-        if statistics_type == 'average':
-            col_name = f"{sensor_name}_avg"
-            if col_name in combined_df.columns:
-                column_mapping[col_name] = description
+                    col_name = f"{sensor_name}_{stat}"
+                
+                # Check if this column exists in our dataframe
+                if col_name in df.columns:
+                    if stat == 'average':
+                        column_mapping[col_name] = description
+                    else:
+                        column_mapping[col_name] = f"{description} ({stat})"
         else:
-            # Handle special cases like sensor_44, sensor_45, etc. (no _avg suffix)
-            if sensor_name in combined_df.columns:
-                column_mapping[sensor_name] = description
+            # Single statistic
+            if statistics_type == 'average':
+                col_name = f"{sensor_name}_avg"
+                if col_name in df.columns:
+                    column_mapping[col_name] = description
+            else:
+                # Handle special cases like sensor_44, sensor_45, etc. (no _avg suffix)
+                if sensor_name in df.columns:
+                    column_mapping[sensor_name] = description
+    
+    # Handle special cases for columns without _avg suffix
+    special_sensors = ['sensor_44', 'sensor_45', 'sensor_46', 'sensor_47', 'sensor_48', 'sensor_49', 'sensor_50', 'sensor_51']
+    for sensor in special_sensors:
+        if sensor in df.columns:
+            # Find the description for this sensor
+            sensor_desc = feature_desc[feature_desc['sensor_name'] == sensor]
+            if not sensor_desc.empty:
+                column_mapping[sensor] = sensor_desc.iloc[0]['description']
+    
+    if verbose:
+        print(f"\nCreated mapping for {len(column_mapping)} columns:")
+        print("Sample mappings:")
+        for i, (old_name, new_name) in enumerate(list(column_mapping.items())[:10]):
+            print(f"  '{old_name}' → '{new_name}'")
+        if len(column_mapping) > 10:
+            print(f"  ... and {len(column_mapping) - 10} more")
+    
+    # Apply the column renaming
+    df_renamed = df.rename(columns=column_mapping)
+    
+    # Check for unmapped sensor columns
+    unmapped_sensor_columns = [col for col in df_renamed.columns 
+                              if (col.startswith('sensor_') or col.startswith('wind_speed_') or 
+                                  col.startswith('reactive_power_') or col.startswith('power_')) 
+                              and col not in ['time_stamp', 'asset_id', 'id', 'train_test', 'status_type_id']]
+    
+    if verbose:
+        if unmapped_sensor_columns:
+            print(f"\nUnmapped sensor columns ({len(unmapped_sensor_columns)}):")
+            for col in unmapped_sensor_columns[:5]:
+                print(f"  - {col}")
+            if len(unmapped_sensor_columns) > 5:
+                print(f"  ... and {len(unmapped_sensor_columns) - 5} more")
+        
+        # Show successful mapping results
+        mapped_columns = [col for col in df_renamed.columns if col in column_mapping.values()]
+        print(f"\nSuccessfully mapped {len(mapped_columns)} columns to descriptive names")
+        
+        print(f"\nSample of new column names:")
+        descriptive_cols = [col for col in df_renamed.columns if col not in ['time_stamp', 'asset_id', 'id', 'train_test', 'status_type_id']]
+        for i, col in enumerate(descriptive_cols[:10]):
+            print(f"  {i+1:2d}. {col}")
+        if len(descriptive_cols) > 10:
+            print(f"  ... and {len(descriptive_cols) - 10} more")
+        
+        # Verify we didn't lose any data
+        print(f"\nVerification:")
+        print(f"  Original shape: {df_renamed.shape}")
+        print(f"  Columns before: {len(df.columns)}")
+        print(f"  Descriptive columns: {len([col for col in df_renamed.columns if col in column_mapping.values()])}")
+        print(f"  System columns: {len([col for col in df_renamed.columns if col in ['time_stamp', 'asset_id', 'id', 'train_test', 'status_type_id']])}")
+    
+    return df_renamed, column_mapping, unmapped_sensor_columns
 
-# Handle special cases for columns without _avg suffix
-special_sensors = ['sensor_44', 'sensor_45', 'sensor_46', 'sensor_47', 'sensor_48', 'sensor_49', 'sensor_50', 'sensor_51']
-for sensor in special_sensors:
-    if sensor in combined_df.columns:
-        # Find the description for this sensor
-        sensor_desc = feature_desc[feature_desc['sensor_name'] == sensor]
-        if not sensor_desc.empty:
-            column_mapping[sensor] = sensor_desc.iloc[0]['description']
-
-print(f"\nCreated mapping for {len(column_mapping)} columns:")
-print("Sample mappings:")
-for i, (old_name, new_name) in enumerate(list(column_mapping.items())[:10]):
-    print(f"  '{old_name}' → '{new_name}'")
-if len(column_mapping) > 10:
-    print(f"  ... and {len(column_mapping) - 10} more")
-
-# Apply the column renaming
-combined_df = combined_df.rename(columns=column_mapping)
-
-# Check for unmapped sensor columns
-unmapped_sensor_columns = [col for col in combined_df.columns 
-                          if (col.startswith('sensor_') or col.startswith('wind_speed_') or 
-                              col.startswith('reactive_power_') or col.startswith('power_')) 
-                          and col not in ['time_stamp', 'asset_id', 'id', 'train_test', 'status_type_id']]
-
-if unmapped_sensor_columns:
-    print(f"\nUnmapped sensor columns ({len(unmapped_sensor_columns)}):")
-    for col in unmapped_sensor_columns[:5]:
-        print(f"  - {col}")
-    if len(unmapped_sensor_columns) > 5:
-        print(f"  ... and {len(unmapped_sensor_columns) - 5} more")
-
-# Show successful mapping results
-mapped_columns = [col for col in combined_df.columns if col in column_mapping.values()]
-print(f"\nSuccessfully mapped {len(mapped_columns)} columns to descriptive names")
-
-print(f"\nSample of new column names:")
-descriptive_cols = [col for col in combined_df.columns if col not in ['time_stamp', 'asset_id', 'id', 'train_test', 'status_type_id']]
-for i, col in enumerate(descriptive_cols[:10]):
-    print(f"  {i+1:2d}. {col}")
-if len(descriptive_cols) > 10:
-    print(f"  ... and {len(descriptive_cols) - 10} more")
-
-# Verify we didn't lose any data
-print(f"\nVerification:")
-print(f"  Original shape: {combined_df.shape}")
-print(f"  Columns before: {len(combined_df.columns)}")
-print(f"  Descriptive columns: {len([col for col in combined_df.columns if col in column_mapping.values()])}")
-print(f"  System columns: {len([col for col in combined_df.columns if col in ['time_stamp', 'asset_id', 'id', 'train_test', 'status_type_id']])}")
+# === APPLY FEATURE RENAMING ===
+feature_desc_path = '../wind-turbines-data/setA/Wind Farm A/comma_feature_description.csv'
+combined_df, column_mapping, unmapped_columns = rename_sensor_columns_with_descriptions(
+    combined_df, feature_desc_path, verbose=True
+)
 
 # --- Step 1.5: Downsample data by keeping every 6th row ---
 print("\n=== DATA DOWNSAMPLING: KEEPING EVERY 6TH ROW ===")

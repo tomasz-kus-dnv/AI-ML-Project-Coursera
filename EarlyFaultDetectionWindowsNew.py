@@ -3,7 +3,7 @@ from imblearn.combine import SMOTEENN
 from numpy.typing import NDArray
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, IsolationForest
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
@@ -338,10 +338,10 @@ def create_sliding_windows(df, event_start_id=None, event_end_id=None,
     df = df.sort_values("id").reset_index(drop=True)
 
     # === APPLY FEATURE RENAMING ===
-    feature_desc_path = '../wind-turbines-data/setA/Wind Farm A/comma_feature_description.csv'
-    df, column_mapping, unmapped_columns = rename_sensor_columns_with_descriptions(df, feature_desc_path, verbose=True)
+    # feature_desc_path = '../wind-turbines-data/setA/Wind Farm A/comma_feature_description.csv'
+    # df, column_mapping, unmapped_columns = rename_sensor_columns_with_descriptions(df, feature_desc_path, verbose=True)
 
-    df = engineer_turbine_features(df)
+    # df = engineer_turbine_features(df)
     
     # Separate feature columns and timestamp columns
     # feature_cols = [col for col in df.columns if col.startswith("sensor_") or col.startswith("wind_") or col.startswith("power_") or col.startswith("reactive_")] 
@@ -349,14 +349,14 @@ def create_sliding_windows(df, event_start_id=None, event_end_id=None,
     timestamp_cols = [col for col in df.columns if col in ["time_stamp", "timestamp", "datetime"]]
     
     df.dropna(inplace=True)
-    df = df[df['status_type_id'] != '2']  # Exclude fault status
-    df = df[df['status_type_id'] != '3']  # Exclude fault status
-    df = df[df['status_type_id'] != '4']  # Exclude fault status
+    # df = df[df['status_type_id'] != '2']  # Exclude fault status
+    # df = df[df['status_type_id'] != '3']  # Exclude fault status
+    # df = df[df['status_type_id'] != '4']  # Exclude fault status
     # df_prediction = df[df["train_test"] == "prediction"].copy().reset_index(drop=True)
 
     # anomaly_ids = set(range(event_start_id - prefault_horizon, event_start_id)) if event_start_id else set()
-    anomaly_ids = set(range(event_start_id - prefault_horizon, event_start_id)) if event_start_id else set()
-    fault_ids = set(range(event_start_id, event_end_id)) if event_start_id else set()
+    # anomaly_ids = set(range(event_start_id - prefault_horizon, event_start_id)) if event_start_id else set()
+    # fault_ids = set(range(event_start_id, event_end_id)) if event_start_id else set()
 
     X_windows = []
     X_timestamps = []
@@ -367,10 +367,13 @@ def create_sliding_windows(df, event_start_id=None, event_end_id=None,
         window = df.iloc[start:end]
         window_ids = set(window["id"])
 
-        if int(len(fault_ids.intersection(window_ids))) > 0:
-            continue
+        # if int(len(fault_ids.intersection(window_ids))) > 0:
+        #    continue
 
-        label = int(len(anomaly_ids.intersection(window_ids)) > 0)
+        statusId = df.iloc[start]["status_type_id"]
+        label = 0
+        if statusId in [1, 3, 4, 5] or statusId in ['1', '3', '4', '5']:
+            label = 1  # Anomaly detected
         
         # Extract features (exclude timestamps from scaling)
         X_features = window[feature_cols].values
@@ -435,7 +438,7 @@ def process_all_events(data_dir, window_size=12, step_size=6, prefault_horizon=1
     # for farm in os.listdir(data_dir):
     farm_path = data_dir # os.path.join(data_dir, farm)
     event_info_path = os.path.join(farm_path, "comma_event_info.csv")
-    dataset_path = os.path.join(farm_path, "datasets" + data_type)
+    dataset_path = os.path.join(farm_path, "datasets-actual")
 
     # if not os.path.isfile(event_info_path):
     #    continue
@@ -464,6 +467,11 @@ def process_all_events(data_dir, window_size=12, step_size=6, prefault_horizon=1
         # if data_type == "_test":
         #    df = df[df["train_test"] == "prediction"].copy().reset_index(drop=True)
         # X_windows, y_labels = create_sliding_windows(df[df['train_test'] == 'train'], event_start_id, event_end_id,
+        if data_type == "_train":
+            df = df[df["train_test"] == "train"].copy().reset_index(drop=True)
+        else:
+            df = df[df["train_test"] == "prediction"].copy().reset_index(drop=True)
+
         X_windows, y_labels, X_timestamps = create_sliding_windows(df, event_start_id, event_end_id,
                                                         window_size, step_size, prefault_horizon)
         all_X.extend(X_windows)
@@ -502,37 +510,37 @@ def prepare_ml_dataset(data_dir, test_size=0.2, random_state=42,
     timestamps_flat = flatten_windows(timestamps)
     
     # Replace zeros in any column with the column mean (excluding zeros)
-    print("Replacing zeros with column averages...")
-    X_flat_no_zeros = X_flat.copy()
-    for col in range(X_flat_no_zeros.shape[1]):
-        col_vals = X_flat_no_zeros[:, col]
-        nonzero_vals = col_vals[col_vals != 0]
-        if nonzero_vals.size > 0:
-            col_mean = nonzero_vals.mean()
-            zeros_count = np.sum(col_vals == 0)
-            if zeros_count > 0:
-                col_vals[col_vals == 0] = col_mean
-                X_flat_no_zeros[:, col] = col_vals
-                print(f"  Column {col}: Replaced {zeros_count} zeros with mean {col_mean:.3f}")
+    # print("Replacing zeros with column averages...")
+    # X_flat_no_zeros = X_flat.copy()
+    # for col in range(X_flat_no_zeros.shape[1]):
+    #     col_vals = X_flat_no_zeros[:, col]
+    #     nonzero_vals = col_vals[col_vals != 0]
+    #     if nonzero_vals.size > 0:
+    #         col_mean = nonzero_vals.mean()
+    #         zeros_count = np.sum(col_vals == 0)
+    #         if zeros_count > 0:
+    #             col_vals[col_vals == 0] = col_mean
+    #             X_flat_no_zeros[:, col] = col_vals
+    #             print(f"  Column {col}: Replaced {zeros_count} zeros with mean {col_mean:.3f}")
     
-    # Apply same zero replacement to test data
-    X_test_flat_no_zeros = X_test_flat.copy()
-    for col in range(X_test_flat_no_zeros.shape[1]):
-        col_vals = X_test_flat_no_zeros[:, col]
-        # Use the same mean from training data for consistency
-        train_col_vals = X_flat_no_zeros[:, col]
-        nonzero_vals = train_col_vals[train_col_vals != 0]
-        if nonzero_vals.size > 0:
-            col_mean = nonzero_vals.mean()
-            zeros_count = np.sum(col_vals == 0)
-            if zeros_count > 0:
-                col_vals[col_vals == 0] = col_mean
-                X_test_flat_no_zeros[:, col] = col_vals
-                print(f"  Test Column {col}: Replaced {zeros_count} zeros with training mean {col_mean:.3f}")
+    # # Apply same zero replacement to test data
+    # X_test_flat_no_zeros = X_test_flat.copy()
+    # for col in range(X_test_flat_no_zeros.shape[1]):
+    #     col_vals = X_test_flat_no_zeros[:, col]
+    #     # Use the same mean from training data for consistency
+    #     train_col_vals = X_flat_no_zeros[:, col]
+    #     nonzero_vals = train_col_vals[train_col_vals != 0]
+    #     if nonzero_vals.size > 0:
+    #         col_mean = nonzero_vals.mean()
+    #         zeros_count = np.sum(col_vals == 0)
+    #         if zeros_count > 0:
+    #             col_vals[col_vals == 0] = col_mean
+    #             X_test_flat_no_zeros[:, col] = col_vals
+    #             print(f"  Test Column {col}: Replaced {zeros_count} zeros with training mean {col_mean:.3f}")
     
-    # Use the cleaned data for scaling
-    X_flat = X_flat_no_zeros
-    X_test_flat = X_test_flat_no_zeros
+    # # Use the cleaned data for scaling
+    # X_flat = X_flat_no_zeros
+    # X_test_flat = X_test_flat_no_zeros
 
     print("Normalizing...")
     print("ℹ️  Note: Timestamp columns (time_stamp, timestamp, datetime) are excluded from scaling")
@@ -759,7 +767,7 @@ def analyze_daily_alarms(y_true, y_pred, test_timestamps, show_details=True):
     
     return results
 
-DATA_DIR = '../wind-turbines-data/setA/Wind Farm A'  # root dir containing WindFarmA/, WindFarmB/, etc.
+DATA_DIR = '../wind-turbines-data/setA/Wind Farm B'  # root dir containing WindFarmA/, WindFarmB/, etc.
 
 X_train, X_test, y_train, y_test, scaler, test_timestamps = prepare_ml_dataset(
     data_dir=DATA_DIR,
@@ -800,25 +808,62 @@ print(f"Train: {X_train.shape}, Test: {X_test.shape}")
 #         bootstrap=True,
 #         oob_score=True
 #         )
-model = XGBClassifier(
-    n_estimators=1000,
-    max_depth=12,
-    learning_rate=0.025,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    random_state=42,
-    eval_metric='logloss',
-    use_label_encoder=False
+model = IsolationForest(
+    n_estimators=200,        # Number of trees in the forest
+    max_samples='auto',      # Use all samples for each tree
+    contamination=0.1,       # Expected proportion of anomalies (adjust based on your data)
+    max_features=1.0,        # Use all features
+    bootstrap=False,         # Don't bootstrap samples
+    n_jobs=-1,              # Use all available cores
+    random_state=42,        # For reproducible results
+    verbose=0               # Silent mode
 )
+# model = XGBClassifier(
+#     n_estimators=200,
+#     max_depth=5,
+#     learning_rate=0.025,
+#     subsample=0.8,
+#     colsample_bytree=0.8,
+#     random_state=42,
+#     eval_metric='logloss',
+#     use_label_encoder=False
+# )
+
+# model = MLPClassifier(
+#     hidden_layer_sizes=(100, 50, 25),
+#     activation='relu',
+#     solver='adam',
+#     max_iter=500,
+#     random_state=42,
+#     early_stopping=True,
+#     validation_fraction=0.1
+# )
 
 # model.fit(X_train_smote, y_train_smote)
-model.fit(X_train, y_train)
+# For IsolationForest, we fit on normal data only (unsupervised learning)
+# Use only normal samples for training (label 0)
+normal_samples_mask = y_train == 0
+X_train_normal = X_train[normal_samples_mask]
+print(f"Training IsolationForest on {len(X_train_normal)} normal samples out of {len(X_train)} total samples")
+
+model.fit(X_train_normal)
 
 test_timestamps = pd.to_datetime(test_timestamps)
 
-y_pred = model.predict(X_test)
-y_proba = model.predict_proba(X_test)[:, 1]
-print(f"Model accuracy: {model.score(X_test, y_test):.4f}")
+# IsolationForest returns -1 for anomalies and 1 for normal points
+# We need to convert this to 0/1 format (0=normal, 1=anomaly)
+y_pred_raw = model.predict(X_test)
+y_pred = np.where(y_pred_raw == -1, 1, 0)  # Convert -1 (anomaly) to 1, and 1 (normal) to 0
+
+# For probability scores, use decision_function (lower scores = more anomalous)
+y_decision_scores = model.decision_function(X_test)
+# Convert decision scores to probabilities (0-1 range)
+# More negative scores = higher anomaly probability
+y_proba = 1 / (1 + np.exp(y_decision_scores))  # Sigmoid transformation
+
+# Calculate accuracy manually for IsolationForest
+model_accuracy = accuracy_score(y_test, y_pred)
+print(f"Model accuracy: {model_accuracy:.4f}")
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
 
 print("\n" + "="*60)
