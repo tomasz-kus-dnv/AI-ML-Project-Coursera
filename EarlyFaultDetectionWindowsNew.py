@@ -9,189 +9,6 @@ from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
 from sklearn.metrics import precision_recall_curve, f1_score
 
-# --- Step 3: Advanced Feature Engineering ---
-print("\n=== ADVANCED FEATURE ENGINEERING ===")
-
-def engineer_turbine_features(df):
-    """
-    Engineer advanced features from wind turbine SCADA data for fault detection
-    """
-    # Division safety threshold - values below this are considered too small for safe division
-    DIV_SAFETY_THRESHOLD = 1e-5
-    # Small epsilon value to prevent actual division by zero in denominators
-    EPSILON = 1e-6
-    
-    # df_engineered = df.copy()
-    df_engineered = pd.DataFrame()  # df.copy()
-    df_engineered['status_type_id'] = df['status_type_id']  # df.copy()
-    df_engineered['id'] = df['id']  # df.copy()
-    df_engineered['time_stamp'] = df['time_stamp']  # df.copy()
-    # df_engineered['train_test'] = df['train_test']  # df.copy()
-    # df_engineered['fault_label'] = df['fault_label']  # df.copy()
-    
-    # === TEMPERATURE-BASED FEATURES ===
-    print("Engineering temperature-based features...")
-    
-    # Temperature differentials (critical for detecting bearing/gearbox issues)
-    df_engineered['temp_diff_gearbox_ambient'] = df['Temperature oil in gearbox'] - df['Ambient temperature']
-    df_engineered['temp_diff_generator_ambient'] = df['Temperature in generator bearing 2 (Drive End)'] - df['Ambient temperature']
-    df_engineered['temp_diff_nacelle_ambient'] = df['Nacelle temperature'] - df['Ambient temperature']
-    
-    # Generator bearing temperature difference (imbalance indicator)
-    df_engineered['temp_diff_generator_bearings'] = (df['Temperature in generator bearing 2 (Drive End)'] - 
-                                                   df['Temperature in generator bearing 1 (Non-Drive End)'])
-    
-    # Generator stator winding temperature variations
-    stator_temps = ['Temperature inside generator in stator windings phase 1',
-                   'Temperature inside generator in stator windings phase 2', 
-                   'Temperature inside generator in stator windings phase 3']
-    df_engineered['stator_temp_mean'] = df[stator_temps].mean(axis=1)
-    df_engineered['stator_temp_std'] = df[stator_temps].std(axis=1)
-    df_engineered['stator_temp_max'] = df[stator_temps].max(axis=1)
-    df_engineered['stator_temp_range'] = df[stator_temps].max(axis=1) - df[stator_temps].min(axis=1)
-    
-    # IGBT temperature variations (inverter health)
-    igbt_grid_temp = 'Temperature measured by the IGBT-driver on the grid side inverter'
-    igbt_rotor_temps = ['Temperature measured by the IGBT-driver on the rotor side inverter phase1',
-                       'Temperature measured by the IGBT-driver on the rotor side inverter phase2',
-                       'Temperature measured by the IGBT-driver on the rotor side inverter phase3']
-    df_engineered['igbt_rotor_temp_mean'] = df[igbt_rotor_temps].mean(axis=1)
-    df_engineered['igbt_rotor_temp_std'] = df[igbt_rotor_temps].std(axis=1)
-    df_engineered['igbt_temp_diff_grid_rotor'] = df[igbt_grid_temp] - df_engineered['igbt_rotor_temp_mean']
-    
-    # HV Transformer temperature balance
-    hv_temps = ['Temperature in HV transformer phase L1',
-               'Temperature in HV transformer phase L2', 
-               'Temperature in HV transformer phase L3']
-    df_engineered['hv_temp_mean'] = df[hv_temps].mean(axis=1)
-    df_engineered['hv_temp_std'] = df[hv_temps].std(axis=1)
-    df_engineered['hv_temp_max'] = df[hv_temps].max(axis=1)
-    
-    # === POWER AND ELECTRICAL FEATURES ===
-    print("Engineering power and electrical features...")
-    
-    # Power efficiency and ratios
-    df_engineered['power_efficiency'] = np.where(df['Windspeed'] ** 3 < DIV_SAFETY_THRESHOLD, 0, df['Total active power'] / (df['Windspeed'] ** 3 + 1e-6))
-    df_engineered['power_wind_ratio'] = np.where(df['Windspeed'] < DIV_SAFETY_THRESHOLD, 0, df['Total active power'] / (df['Windspeed'] + 1e-6))
-    df_engineered['reactive_active_ratio'] = np.where(df['Total active power'] < DIV_SAFETY_THRESHOLD, 0, df['Total reactive power'] / (df['Total active power'] + 1e-6))
-    
-    # Voltage balance across phases
-    voltage_phases = ['Averaged voltage in phase 1', 'Averaged voltage in phase 2', 'Averaged voltage in phase 3']
-    df_engineered['voltage_mean'] = df[voltage_phases].mean(axis=1)
-    df_engineered['voltage_std'] = df[voltage_phases].std(axis=1)
-    df_engineered['voltage_imbalance'] = np.where(df_engineered['voltage_mean'] < DIV_SAFETY_THRESHOLD, 0, df_engineered['voltage_std'] / df_engineered['voltage_mean'])
-    
-    # Current balance across phases
-    current_phases = ['Averaged current in phase 1', 'Averaged current in phase 2', 'Averaged current in phase 3']
-    df_engineered['current_mean'] = df[current_phases].mean(axis=1)
-    df_engineered['current_std'] = df[current_phases].std(axis=1)
-    df_engineered['current_imbalance'] = np.where(df_engineered['current_mean'] < DIV_SAFETY_THRESHOLD, 0, df_engineered['current_std'] / df_engineered['current_mean'])
-    
-    # Power factor and grid interaction
-    df_engineered['power_factor'] = np.where((df['Total active power']**2 + df['Total reactive power']**2) < DIV_SAFETY_THRESHOLD, 0, 
-                                           df['Total active power'] / np.sqrt(df['Total active power']**2 + df['Total reactive power']**2 + 1e-6))
-    df_engineered['grid_power_ratio'] = np.where(df['Total active power'] < DIV_SAFETY_THRESHOLD, 0, df['Grid power'] / (df['Total active power'] + 1e-6))
-    
-    # === ROTATIONAL AND MECHANICAL FEATURES ===
-    print("Engineering rotational and mechanical features...")
-    
-    # Gearbox ratio and efficiency indicators
-    df_engineered['gearbox_ratio'] = np.where(df['Rotor rpm'] < DIV_SAFETY_THRESHOLD, 0, df['Generator rpm in latest period'] / (df['Rotor rpm'] + 1e-6))
-    df_engineered['rotor_speed_normalized'] = np.where(df['Windspeed'] < DIV_SAFETY_THRESHOLD, 0, df['Rotor rpm'] / (df['Windspeed'] + 1e-6))
-    
-    # Speed variations and turbulence indicators
-    if 'Estimated windspeed' in df.columns and 'Windspeed' in df.columns:
-        df_engineered['wind_speed_error'] = df['Windspeed'] - df['Estimated windspeed']
-        df_engineered['wind_turbulence_indicator'] = np.where(df['Windspeed'] < DIV_SAFETY_THRESHOLD, 0, 
-                                                            abs(df_engineered['wind_speed_error']) / (df['Windspeed'] + 1e-6))
-    
-    # === DIRECTIONAL AND ALIGNMENT FEATURES ===
-    print("Engineering directional features...")
-    
-    # Wind direction features (convert to circular statistics)
-    # df_engineered['wind_dir_sin'] = np.sin(np.radians(df['Wind absolute direction']))
-    # df_engineered['wind_dir_cos'] = np.cos(np.radians(df['Wind absolute direction']))
-    # df_engineered['nacelle_dir_sin'] = np.sin(np.radians(df['Nacelle direction']))
-    # df_engineered['nacelle_dir_cos'] = np.cos(np.radians(df['Nacelle direction']))
-    
-    # # Nacelle-wind alignment (yaw error)
-    # wind_rad = np.radians(df['Wind absolute direction'])
-    # nacelle_rad = np.radians(df['Nacelle direction'])
-    # df_engineered['yaw_error'] = np.degrees(np.arctan2(np.sin(wind_rad - nacelle_rad), 
-    #                                                    np.cos(wind_rad - nacelle_rad)))
-    # df_engineered['yaw_error_abs'] = abs(df_engineered['yaw_error'])
-    
-    # === OPERATIONAL STATE FEATURES ===
-    print("Engineering operational state features...")
-    
-    # Generator connection state indicators
-    df_engineered['generator_connected'] = (df['Active power - generator connected in delta'] > 0) | \
-                                         (df['Active power - generator connected in star'] > 0)
-    df_engineered['generator_disconnected'] = df['Active power - generator disconnected'] > 0
-    
-    # Power generation mode
-    df_engineered['delta_connection_active'] = df['Active power - generator connected in delta'] > df['Active power - generator connected in star']
-    
-    # === COOLING AND THERMAL MANAGEMENT ===
-    print("Engineering thermal management features...")
-    
-    # Cooling effectiveness indicators
-    df_engineered['cooling_effectiveness'] = np.where(df['Ambient temperature'] < DIV_SAFETY_THRESHOLD, 0,
-                                                     (df['Ambient temperature'] - df['Temperature in the VCS cooling water']) / 
-                                                     (df['Ambient temperature'] + 1e-6))
-    
-    # Heat dissipation indicators
-    df_engineered['thermal_load_gearbox'] = np.where(df['Total active power'] < DIV_SAFETY_THRESHOLD, 0, 
-                                                    df['Temperature oil in gearbox'] / (df['Total active power'] + 1e-6))
-    df_engineered['thermal_load_generator'] = np.where(df['Total active power'] < DIV_SAFETY_THRESHOLD, 0, 
-                                                      df_engineered['stator_temp_mean'] / (df['Total active power'] + 1e-6))
-    
-    # === CONTROL SYSTEM FEATURES ===
-    print("Engineering control system features...")
-    
-    # Pitch angle effectiveness
-    df_engineered['pitch_effectiveness'] = np.where(df['Windspeed'] < DIV_SAFETY_THRESHOLD, 0, df['Pitch angle'] / (df['Windspeed'] + 1e-6))
-    df_engineered['pitch_power_ratio'] = np.where(abs(df['Pitch angle']) < DIV_SAFETY_THRESHOLD, 0, 
-                                                 df['Total active power'] / (abs(df['Pitch angle']) + 1e-6))
-    
-    # Grid frequency deviation
-    df_engineered['grid_freq_deviation'] = abs(df['Grid frequency'] - 50.0)  # Assuming 50Hz grid
-    
-    # === RATIO AND EFFICIENCY FEATURES ===
-    print("Engineering efficiency and ratio features...")
-    
-    # Multi-component temperature ratios
-    # Multi-component temperature ratios
-    df_engineered['gearbox_generator_temp_ratio'] = np.where(df['Temperature in generator bearing 2 (Drive End)'] < DIV_SAFETY_THRESHOLD, 0,
-                                                            df['Temperature oil in gearbox'] / 
-                                                            (df['Temperature in generator bearing 2 (Drive End)'] + EPSILON))
-    df_engineered['controller_ambient_ratio'] = np.where(df['Ambient temperature'] < DIV_SAFETY_THRESHOLD, 0, 
-                                                        df['Temperature in the hub controller'] / (df['Ambient temperature'] + EPSILON))
-    
-    # Power density indicators
-    df_engineered['power_per_rpm'] = np.where(df['Generator rpm in latest period'] < DIV_SAFETY_THRESHOLD, 0, 
-                                             df['Total active power'] / (df['Generator rpm in latest period'] + EPSILON))
-    df_engineered['power_per_wind_cube'] = np.where(df['Windspeed'] ** 3 < DIV_SAFETY_THRESHOLD, 0, 
-                                                   df['Total active power'] / (df['Windspeed'] ** 3 + EPSILON))
-    
-    # === ANOMALY DETECTION FEATURES ===
-    print("Engineering anomaly detection features...")
-    
-    # Create composite health indicators
-    temp_features = [col for col in df.columns if 'temp' in col.lower() or 'temperature' in col.lower()]
-    if temp_features:
-        df_engineered['overall_temp_level'] = df[temp_features].mean(axis=1)
-        df_engineered['max_temp_deviation'] = df[temp_features].max(axis=1) - df[temp_features].min(axis=1)
-    
-    # Electrical system health
-    electrical_features = ['voltage_imbalance', 'current_imbalance', 'grid_freq_deviation', 'power_factor']
-    available_electrical = [f for f in electrical_features if f in df_engineered.columns]
-    if available_electrical:
-        df_engineered['electrical_health_score'] = df_engineered[available_electrical].mean(axis=1)
-    
-    print(f"Feature engineering completed. Added {len(df_engineered.columns) - len(df.columns)} new features.")
-    return df_engineered
-
 def rename_sensor_columns_with_descriptions(df, feature_desc_path, verbose=True):
     """
     Rename sensor columns in the dataframe using descriptive names from feature description file.
@@ -809,7 +626,7 @@ print(f"Train: {X_train.shape}, Test: {X_test.shape}")
 #         oob_score=True
 #         )
 model = IsolationForest(
-    n_estimators=200,        # Number of trees in the forest
+    n_estimators=2000,        # Number of trees in the forest
     max_samples='auto',      # Use all samples for each tree
     contamination=0.1,       # Expected proportion of anomalies (adjust based on your data)
     max_features=1.0,        # Use all features
@@ -861,10 +678,10 @@ y_decision_scores = model.decision_function(X_test)
 # More negative scores = higher anomaly probability
 y_proba = 1 / (1 + np.exp(y_decision_scores))  # Sigmoid transformation
 
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
 # Calculate accuracy manually for IsolationForest
 model_accuracy = accuracy_score(y_test, y_pred)
 print(f"Model accuracy: {model_accuracy:.4f}")
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
 
 print("\n" + "="*60)
 print("DETAILED CLASSIFICATION RESULTS EXPLANATION")
